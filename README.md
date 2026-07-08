@@ -31,6 +31,10 @@ npm run build      # outputs to dist/
 npm run preview    # preview the production build locally
 ```
 
+## Deployment
+
+Hosted on Vercel at [koshur-calendar.vercel.app](https://koshur-calendar.vercel.app), connected to this repo — every push to `main` deploys automatically.
+
 ## Project structure
 
 ```
