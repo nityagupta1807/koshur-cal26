@@ -1025,6 +1025,7 @@ export default function KashmiriCalendar() {
   }, [cardDate]);
 
   const cardDayReminders = useMemo(() => remindersForDate(cardDate, reminders), [cardDate, reminders]);
+  const cardIsPanchak = useMemo(() => dayPanchang(cardDate).isPanchak, [cardDate]);
 
   return (
     <div style={{ ...styles.page, background: isDark ? "#0E0E12" : "#E5E4DD" }}>
@@ -1282,6 +1283,17 @@ export default function KashmiriCalendar() {
         .kc-reminder-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-top:1px solid var(--kc-divider); }
         .kc-reminder-title { font-size:14px; font-weight:600; color: var(--md-on-surface); }
 
+        .kc-reminder-row.kc-row-birthday {
+          padding: 16px 76px 16px 16px; border-radius: 16px; background: var(--kc-birthday-bg);
+          position: relative; overflow: hidden; min-height: 64px; margin: 12px 0 6px; cursor: pointer;
+        }
+        .kc-birthday-illustration { position: absolute; right: 6px; bottom: 2px; width: 68px; height: 68px; pointer-events: none; }
+        .kc-birthday-delete {
+          position: absolute; top: 8px; right: 8px; opacity: 0; transform: scale(0.7);
+          pointer-events: none; transition: opacity 140ms ease, transform 140ms cubic-bezier(.34,1.56,.64,1);
+        }
+        .kc-birthday-delete.visible { opacity: 1; transform: scale(1); pointer-events: auto; }
+
         .kc-panchak-card {
           background: var(--md-surface-container-lowest);
           border-radius: 24px;
@@ -1354,8 +1366,8 @@ export default function KashmiriCalendar() {
         }
         .kc-fest-row {
           display:flex; align-items:center; gap:12px; width:100%; text-align:left;
-          padding:11px 0; border:none; background:transparent; cursor:pointer;
-          border-top: 1px solid var(--md-outline-variant);
+          padding:13px 0; border:none; background:transparent; cursor:pointer;
+          border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) 70%, transparent);
         }
         .kc-fest-row:active { opacity:0.6; }
         .kc-fest-dot {
@@ -1372,6 +1384,7 @@ export default function KashmiriCalendar() {
           background: var(--md-surface-container); border-color: var(--md-outline-variant);
           color: var(--md-on-surface);
         }
+        .kc-root.dark .kc-input::-webkit-calendar-picker-indicator { filter: invert(1); }
         .kc-root.dark .kc-splash {
           background:
             radial-gradient(120% 90% at 18% 12%, rgba(180,120,50,0.20) 0%, transparent 55%),
@@ -1514,9 +1527,11 @@ export default function KashmiriCalendar() {
           </div>
 
           {/* Panchak window, when the displayed date falls inside one */}
-          <div style={styles.stackSection}>
-            <PanchakCard date={cardDate} />
-          </div>
+          {cardIsPanchak && (
+            <div style={styles.stackSection}>
+              <PanchakCard date={cardDate} />
+            </div>
+          )}
 
           {/* Reminders for this specific date, own card */}
           {cardDayReminders.length > 0 && (
@@ -1691,6 +1706,7 @@ function PanchakCard({ date }) {
 
 function DayRemindersCard({ date, reminders, onDelete }) {
   const dayReminders = remindersForDate(date, reminders);
+  const [revealedId, setRevealedId] = useState(null);
   if (dayReminders.length === 0) return null;
 
   return (
@@ -1698,15 +1714,41 @@ function DayRemindersCard({ date, reminders, onDelete }) {
       <div className="kc-reminder-card-title">Reminders for {fmtDate(date)}</div>
       {dayReminders.map((r, i) => {
         const Icon = CATEGORY_META[r.category].icon;
+        const isBirthday = r.category === "birthday";
+        const meta = r.daysUntil === 0 ? "Today" : `${r.daysUntil} day${r.daysUntil === 1 ? "" : "s"} left`;
+
+        if (isBirthday) {
+          const revealed = revealedId === r.id;
+          return (
+            <div
+              key={r.id}
+              className="kc-reminder-row kc-row-birthday"
+              onClick={() => setRevealedId(revealed ? null : r.id)}
+            >
+              <div>
+                <div className="kc-reminder-title">{r.title}</div>
+                <div className="kc-reminder-meta">{meta}</div>
+              </div>
+              <BirthdayIllustration className="kc-birthday-illustration" />
+              <button
+                className={`kc-btn-icon kc-icon-hover kc-birthday-delete ${revealed ? "visible" : ""}`}
+                style={{ width: 28, height: 28, borderRadius: 14 }}
+                onClick={(e) => { e.stopPropagation(); onDelete(r.id); }}
+                aria-label="Delete reminder"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          );
+        }
+
         return (
           <div key={r.id} className="kc-reminder-row" style={i === 0 ? { borderTop: "none" } : undefined}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Icon size={16} color="var(--md-on-surface-variant)" />
               <div>
                 <div className="kc-reminder-title">{r.title}</div>
-                <div className="kc-reminder-meta">
-                  {r.daysUntil === 0 ? "Today" : `${r.daysUntil} day${r.daysUntil === 1 ? "" : "s"} left`}
-                </div>
+                <div className="kc-reminder-meta">{meta}</div>
               </div>
             </div>
             <button className="kc-btn-icon kc-icon-hover" style={{ width: 32, height: 32, borderRadius: 16 }} onClick={() => onDelete(r.id)} aria-label="Delete reminder">
@@ -1716,6 +1758,28 @@ function DayRemindersCard({ date, reminders, onDelete }) {
         );
       })}
     </div>
+  );
+}
+
+// Small flat-style birthday illustration — cake, candle flame, and a couple
+// of confetti dots — drawn from the app's own accent palette so it reads as
+// native rather than a bolted-on stock graphic.
+function BirthdayIllustration({ className }) {
+  return (
+    <svg className={className} viewBox="0 0 68 68" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="6" cy="22" r="2.6" fill="var(--kc-accent2)" opacity="0.55" />
+      <circle cx="16" cy="10" r="2" fill="var(--kc-accent)" opacity="0.55" />
+      <circle cx="4" cy="10" r="1.6" fill="var(--kc-birthday-fg)" opacity="0.5" />
+      <ellipse cx="36" cy="58" rx="21" ry="3.5" fill="var(--kc-birthday-fg)" opacity="0.14" />
+      <rect x="18" y="36" width="34" height="20" rx="7" fill="var(--kc-birthday-icon-bg)" />
+      <path
+        d="M18,38 C20,32 24,32 26,38 C28,32 32,32 34,38 C36,32 40,32 42,38 C44,32 48,32 50,38 L50,44 L18,44 Z"
+        fill="var(--kc-birthday-fg)"
+        opacity="0.9"
+      />
+      <rect x="32" y="20" width="4" height="15" rx="1.6" fill="var(--kc-accent)" />
+      <path d="M34,9 C36.5,12.3 37.5,14.6 34,18 C30.5,14.6 31.5,12.3 34,9 Z" fill="var(--kc-accent2)" />
+    </svg>
   );
 }
 
@@ -2050,6 +2114,9 @@ const LIGHT_TOKENS = {
   "--kc-sunset-fg": "#6B4FA0",
   "--kc-panchak": "#C0392B",
   "--kc-panchak-bg": "#FBE1DE",
+  "--kc-birthday-bg": "#FDF1F6",
+  "--kc-birthday-icon-bg": "#F9DCE9",
+  "--kc-birthday-fg": "#C2478A",
   "--kc-page-bg": "#E5E4DD",
   "--kc-card-shadow": "0 8px 28px rgba(60,55,70,0.10), 0 1px 3px rgba(60,55,70,0.06)",
   "--kc-card-shadow-sm": "0 6px 20px rgba(60,55,70,0.08), 0 1px 3px rgba(60,55,70,0.06)",
@@ -2095,6 +2162,9 @@ const DARK_TOKENS = {
   "--kc-sunset-fg": "#B8A0E8",
   "--kc-panchak": "#E8837A",
   "--kc-panchak-bg": "#3A2020",
+  "--kc-birthday-bg": "#2E2028",
+  "--kc-birthday-icon-bg": "#3E2434",
+  "--kc-birthday-fg": "#E89AC4",
   "--kc-page-bg": "#0E0E12",
   "--kc-card-shadow": "0 8px 28px rgba(0,0,0,0.40), 0 1px 3px rgba(0,0,0,0.20)",
   "--kc-card-shadow-sm": "0 6px 20px rgba(0,0,0,0.30), 0 1px 3px rgba(0,0,0,0.15)",
