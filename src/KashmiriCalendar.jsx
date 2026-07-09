@@ -197,6 +197,67 @@ function ayanamsa(year) {
   return 23.8531 + (year - 2000) * 0.0139694;
 }
 
+// Moon's sidereal (nirayana) longitude — needed for Panchak, which unlike
+// tithi is defined by the Moon's absolute nakshatra position, not its angle
+// from the Sun. Ayanamsa drifts by ~0.000038°/day, so approximating the
+// calendar year from the Julian day (rather than threading an actual date
+// through) is accurate well beyond what matters here.
+function moonSiderealLongitude(jd) {
+  const T = (jd - 2451545.0) / 36525;
+  const approxYear = 2000 + (jd - 2451545.0) / 365.25;
+  return norm360(moonLongitude(T).longitude - ayanamsa(approxYear));
+}
+
+// Panchak: the ~4.3-day span when the Moon transits the last pada of
+// Dhanishta through the end of Revati (303°20' through 360° sidereal) —
+// traditionally reckoned as touching five nakshatras, hence the name.
+const PANCHAK_START_DEG = 303 + 1 / 3;
+
+function isMoonInPanchak(jd) {
+  return moonSiderealLongitude(jd) >= PANCHAK_START_DEG;
+}
+
+// Newton-Raphson search for the instant the Moon's sidereal longitude
+// crosses `targetDeg`, seeded from a guess within ~a day of the true
+// crossing. Diffs are normalized to [-180,180] so the 360°→0° wraparound
+// (the Panchak end boundary) is handled the same as any other crossing.
+function findMoonSiderealCrossing(jdGuess, targetDeg) {
+  let guess = jdGuess;
+  for (let i = 0; i < 12; i++) {
+    const lon1 = moonSiderealLongitude(guess);
+    const lon2 = moonSiderealLongitude(guess + 0.1);
+    let diff1 = lon1 - targetDeg;
+    if (diff1 > 180) diff1 -= 360;
+    if (diff1 < -180) diff1 += 360;
+    let speed = lon2 - lon1;
+    if (speed > 180) speed -= 360;
+    if (speed < -180) speed += 360;
+    guess -= diff1 / (speed / 0.1);
+  }
+  return guess;
+}
+
+// Given an instant already known to fall within Panchak, finds the precise
+// start/end instants of that Panchak window by stepping outward a day at a
+// time until outside the window, then refining each boundary exactly.
+function panchakWindowContaining(instant) {
+  const jd0 = julianDay(instant);
+  if (!isMoonInPanchak(jd0)) return null;
+
+  let jdBefore = jd0;
+  for (let i = 0; i < 10 && isMoonInPanchak(jdBefore); i++) jdBefore -= 1;
+  const startJd = findMoonSiderealCrossing((jdBefore + jd0) / 2, PANCHAK_START_DEG);
+
+  let jdAfter = jd0;
+  for (let i = 0; i < 10 && isMoonInPanchak(jdAfter); i++) jdAfter += 1;
+  const endJd = findMoonSiderealCrossing((jd0 + jdAfter) / 2, 0);
+
+  return {
+    start: new Date((startJd - 2440587.5) * 86400000),
+    end: new Date((endJd - 2440587.5) * 86400000),
+  };
+}
+
 // Core computation at an exact instant.
 function panchangAtInstant(instant) {
   const jd = julianDay(instant);
@@ -249,7 +310,8 @@ function panchangAtInstant(instant) {
 // The tithi/month/paksha "of" a calendar day, evaluated at that day's Kashmir
 // sunrise — the standard convention published panchangs use.
 function dayPanchang(date) {
-  return panchangAtInstant(sunriseInstant(date, LOCATION.lat, LOCATION.lon));
+  const instant = sunriseInstant(date, LOCATION.lat, LOCATION.lon);
+  return { ...panchangAtInstant(instant), isPanchak: isMoonInPanchak(julianDay(instant)) };
 }
 
 // Kashmiri Pandit (Batta) festival calendar, expressed as (lunar month index,
@@ -301,6 +363,7 @@ function festivalFor(p) {
    ========================================================================= */
 
 const WEEKDAY_SHORT = ["S", "M", "T", "W", "T", "F", "S"];
+const WEEKDAY_SHORT_MON_START = ["M", "T", "W", "T", "F", "S", "S"];
 const WEEKDAY_MED = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_LABEL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -318,13 +381,23 @@ function addDays(d, n) {
   return new Date(d.getTime() + n * 86400000);
 }
 function startOfWeek(d) {
-  return addDays(d, -d.getUTCDay());
+  return addDays(d, -((d.getUTCDay() + 6) % 7));
 }
 function sameDay(a, b) {
   return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
 }
 function fmtDate(d) {
   return `${WEEKDAY_MED[d.getUTCDay()]}, ${MONTH_LABEL[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+// Formats an exact instant (not just a calendar day) in IST — used for
+// Panchak start/end, which can fall at any time of day, not just sunrise.
+function fmtInstantIST(instant) {
+  const shifted = new Date(instant.getTime() + IST_OFFSET_MS);
+  const h = shifted.getUTCHours();
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const ampm = h >= 12 ? "PM" : "AM";
+  const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
+  return `${WEEKDAY_MED[shifted.getUTCDay()]}, ${MONTH_LABEL[shifted.getUTCMonth()].slice(0, 3)} ${shifted.getUTCDate()} · ${h12}:${mm} ${ampm}`;
 }
 
 /* ---------------------- Reminders ---------------------- */
@@ -346,8 +419,26 @@ function isReminderOnDate(reminder, date) {
     : reminder.year === date.getUTCFullYear() && reminder.month === date.getUTCMonth() && reminder.day === date.getUTCDate();
 }
 
+// Checks whether `reminder` should surface on `date` — either because the
+// event itself falls on `date`, or because `date` sits inside the
+// notify-lead-time window counting back from the event (e.g. a reminder set
+// for "1 week before" starts showing up to 7 days ahead, counting down).
+function reminderLeadInfo(reminder, date) {
+  if (isReminderOnDate(reminder, date)) return { showing: true, daysUntil: 0 };
+  if (!reminder.notify || !reminder.notifyOffset) return { showing: false };
+  for (let k = 1; k <= reminder.notifyOffset; k++) {
+    if (isReminderOnDate(reminder, addDays(date, k))) return { showing: true, daysUntil: k };
+  }
+  return { showing: false };
+}
+
 function remindersForDate(date, reminders) {
-  return reminders.filter((r) => isReminderOnDate(r, date));
+  const out = [];
+  for (const r of reminders) {
+    const info = reminderLeadInfo(r, date);
+    if (info.showing) out.push({ ...r, daysUntil: info.daysUntil });
+  }
+  return out;
 }
 
 function nextOccurrence(reminder, from) {
@@ -1030,6 +1121,7 @@ export default function KashmiriCalendar() {
 
         .kc-dot-filled { width:4px; height:4px; border-radius:50%; background: var(--md-on-surface-variant); display:block; }
         .kc-dot-ring { width:4px; height:4px; border-radius:50%; border:1px solid var(--md-on-surface-variant); display:block; }
+        .kc-dot-panchak { width:4px; height:4px; border-radius:50%; background: var(--kc-panchak); display:block; }
         .kc-day-cell.selected .kc-dot-filled { background: var(--md-on-primary); }
         .kc-day-cell.selected .kc-dot-ring { border-color: var(--md-on-primary); }
 
@@ -1186,6 +1278,26 @@ export default function KashmiriCalendar() {
         }
         .kc-reminder-row { display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-top:1px solid var(--kc-divider); }
         .kc-reminder-title { font-size:14px; font-weight:600; color: var(--md-on-surface); }
+
+        .kc-panchak-card {
+          background: var(--md-surface-container-lowest);
+          border-radius: 24px;
+          padding: 16px 18px;
+          box-shadow: var(--kc-card-shadow-sm); border: var(--kc-card-border);
+        }
+        .kc-panchak-title-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+        .kc-panchak-icon-wrap {
+          width:32px; height:32px; border-radius:12px; flex-shrink:0;
+          display:flex; align-items:center; justify-content:center;
+          background: var(--kc-panchak-bg);
+        }
+        .kc-panchak-row { display:flex; align-items:center; justify-content:space-between; padding:4px 0; }
+        .kc-panchak-label { font-size:12px; font-weight:600; color: var(--md-on-surface-variant); }
+        .kc-panchak-value { font-size:13px; font-weight:700; color: var(--md-on-surface); }
+        .kc-panchak-duration {
+          font-size:12px; color: var(--md-on-surface-variant); margin-top:8px; padding-top:8px;
+          border-top:1px solid var(--kc-divider);
+        }
         .kc-reminder-meta { font-size:11px; color: var(--md-on-surface-variant); margin-top:4px; }
 
         .kc-summary-card { background: var(--md-surface-container); border-radius: 20px; padding: 4px 14px; }
@@ -1398,6 +1510,11 @@ export default function KashmiriCalendar() {
             <InfoCard date={cardDate} today={today} isDayView={viewMode === "day"} onNav={step} />
           </div>
 
+          {/* Panchak window, when the displayed date falls inside one */}
+          <div style={styles.stackSection}>
+            <PanchakCard date={cardDate} />
+          </div>
+
           {/* Reminders for this specific date, own card */}
           {cardDayReminders.length > 0 && (
             <div style={styles.stackSection}>
@@ -1535,6 +1652,40 @@ function InfoCard({ date, today, isDayView, onNav }) {
   );
 }
 
+function PanchakCard({ date }) {
+  const window = useMemo(() => {
+    const p = dayPanchang(date);
+    if (!p.isPanchak) return null;
+    return panchakWindowContaining(sunriseInstant(date, LOCATION.lat, LOCATION.lon));
+  }, [date]);
+
+  if (!window) return null;
+  const { start, end } = window;
+  const totalHours = Math.round((end - start) / 3600000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+
+  return (
+    <div className="kc-panchak-card">
+      <div className="kc-panchak-title-row">
+        <div className="kc-panchak-icon-wrap">
+          <Moon size={16} color="var(--kc-panchak)" />
+        </div>
+        <div className="kc-reminder-card-title" style={{ margin: 0 }}>Panchak</div>
+      </div>
+      <div className="kc-panchak-row">
+        <span className="kc-panchak-label">Begins</span>
+        <span className="kc-panchak-value">{fmtInstantIST(start)}</span>
+      </div>
+      <div className="kc-panchak-row">
+        <span className="kc-panchak-label">Ends</span>
+        <span className="kc-panchak-value">{fmtInstantIST(end)}</span>
+      </div>
+      <div className="kc-panchak-duration">Duration · {days}d {hours}h</div>
+    </div>
+  );
+}
+
 function DayRemindersCard({ date, reminders, onDelete }) {
   const dayReminders = remindersForDate(date, reminders);
   if (dayReminders.length === 0) return null;
@@ -1550,7 +1701,9 @@ function DayRemindersCard({ date, reminders, onDelete }) {
               <Icon size={16} color="var(--md-on-surface-variant)" />
               <div>
                 <div className="kc-reminder-title">{r.title}</div>
-                {r.notify && <div className="kc-reminder-meta">Reminder · {NOTIFY_LABEL[r.notifyOffset]}</div>}
+                <div className="kc-reminder-meta">
+                  {r.daysUntil === 0 ? "Today" : `${r.daysUntil} day${r.daysUntil === 1 ? "" : "s"} left`}
+                </div>
               </div>
             </div>
             <button className="kc-btn-icon kc-icon-hover" style={{ width: 32, height: 32, borderRadius: 16 }} onClick={() => onDelete(r.id)} aria-label="Delete reminder">
@@ -1591,11 +1744,12 @@ function FestivalsCard({ festivals, monthLabel, today, onSelect }) {
   );
 }
 
-function DotRow({ fest, hasReminder }) {
+function DotRow({ fest, hasReminder, isPanchak }) {
   return (
     <div style={{ display: "flex", gap: 3, height: 5, alignItems: "center", justifyContent: "center" }}>
       {fest && <span className="kc-dot-filled" />}
       {hasReminder && <span className="kc-dot-ring" />}
+      {isPanchak && <span className="kc-dot-panchak" />}
     </div>
   );
 }
@@ -1635,7 +1789,7 @@ function MonthGrid({ anchor, today, selected, onSelect, reminders }) {
   return (
     <div style={{ padding: "4px 6px 12px" }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
-        {WEEKDAY_SHORT.map((d, i) => (
+        {WEEKDAY_SHORT_MON_START.map((d, i) => (
           <div key={i} style={styles.monthWeekdayLabel}>{d}</div>
         ))}
       </div>
@@ -1644,7 +1798,8 @@ function MonthGrid({ anchor, today, selected, onSelect, reminders }) {
           const inMonth = d.getUTCMonth() === month;
           const isToday = sameDay(d, today);
           const isSel = sameDay(d, selected);
-          const fest = festivalFor(dayPanchang(d));
+          const p = dayPanchang(d);
+          const fest = festivalFor(p);
           const hasReminder = remindersForDate(d, reminders).length > 0;
           return (
             <div
@@ -1653,7 +1808,7 @@ function MonthGrid({ anchor, today, selected, onSelect, reminders }) {
               onClick={() => onSelect(d)}
             >
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--md-on-surface)" }}>{d.getUTCDate()}</span>
-              <DotRow fest={fest} hasReminder={hasReminder} />
+              <DotRow fest={fest} hasReminder={hasReminder} isPanchak={p.isPanchak} />
             </div>
           );
         })}
@@ -1890,6 +2045,8 @@ const LIGHT_TOKENS = {
   "--kc-sunrise-fg": "#B4700E",
   "--kc-sunset-bg": "#E7E0F8",
   "--kc-sunset-fg": "#6B4FA0",
+  "--kc-panchak": "#C0392B",
+  "--kc-panchak-bg": "#FBE1DE",
   "--kc-page-bg": "#E5E4DD",
   "--kc-card-shadow": "0 8px 28px rgba(60,55,70,0.10), 0 1px 3px rgba(60,55,70,0.06)",
   "--kc-card-shadow-sm": "0 6px 20px rgba(60,55,70,0.08), 0 1px 3px rgba(60,55,70,0.06)",
@@ -1933,6 +2090,8 @@ const DARK_TOKENS = {
   "--kc-sunrise-fg": "#F0B060",
   "--kc-sunset-bg": "#28204A",
   "--kc-sunset-fg": "#B8A0E8",
+  "--kc-panchak": "#E8837A",
+  "--kc-panchak-bg": "#3A2020",
   "--kc-page-bg": "#0E0E12",
   "--kc-card-shadow": "0 8px 28px rgba(0,0,0,0.40), 0 1px 3px rgba(0,0,0,0.20)",
   "--kc-card-shadow-sm": "0 6px 20px rgba(0,0,0,0.30), 0 1px 3px rgba(0,0,0,0.15)",
