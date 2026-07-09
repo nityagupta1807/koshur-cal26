@@ -1090,7 +1090,10 @@ export default function KashmiriCalendar() {
         .kc-search-result {
           display:flex; align-items:center; justify-content:space-between;
           width:100%; text-align:left; padding:14px 8px; border:none; background:transparent;
-          border-bottom: 1px solid var(--md-outline-variant); cursor:pointer;
+          cursor:pointer;
+        }
+        .kc-search-result:not(:last-child) {
+          border-bottom: 1px solid color-mix(in srgb, var(--md-outline-variant) 60%, transparent);
         }
         .kc-search-result:active { background: var(--md-surface-container-high); }
         .kc-search-type {
