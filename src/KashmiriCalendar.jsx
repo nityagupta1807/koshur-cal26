@@ -1025,6 +1025,7 @@ export default function KashmiriCalendar() {
   }, [cardDate]);
 
   const cardDayReminders = useMemo(() => remindersForDate(cardDate, reminders), [cardDate, reminders]);
+  const cardIsPanchak = useMemo(() => dayPanchang(cardDate).isPanchak, [cardDate]);
 
   return (
     <div style={{ ...styles.page, background: isDark ? "#0E0E12" : "#E5E4DD" }}>
@@ -1284,7 +1285,7 @@ export default function KashmiriCalendar() {
 
         .kc-reminder-row.kc-row-birthday {
           padding: 16px 76px 16px 16px; border-radius: 16px; background: var(--kc-birthday-bg);
-          position: relative; overflow: hidden; min-height: 64px; margin: 8px 0 6px; cursor: pointer;
+          position: relative; overflow: hidden; min-height: 64px; margin: 12px 0 6px; cursor: pointer;
         }
         .kc-birthday-illustration { position: absolute; right: 6px; bottom: 2px; width: 68px; height: 68px; pointer-events: none; }
         .kc-birthday-delete {
@@ -1365,8 +1366,8 @@ export default function KashmiriCalendar() {
         }
         .kc-fest-row {
           display:flex; align-items:center; gap:12px; width:100%; text-align:left;
-          padding:11px 0; border:none; background:transparent; cursor:pointer;
-          border-top: 1px solid var(--md-outline-variant);
+          padding:13px 0; border:none; background:transparent; cursor:pointer;
+          border-top: 1px solid color-mix(in srgb, var(--md-outline-variant) 70%, transparent);
         }
         .kc-fest-row:active { opacity:0.6; }
         .kc-fest-dot {
@@ -1526,9 +1527,11 @@ export default function KashmiriCalendar() {
           </div>
 
           {/* Panchak window, when the displayed date falls inside one */}
-          <div style={styles.stackSection}>
-            <PanchakCard date={cardDate} />
-          </div>
+          {cardIsPanchak && (
+            <div style={styles.stackSection}>
+              <PanchakCard date={cardDate} />
+            </div>
+          )}
 
           {/* Reminders for this specific date, own card */}
           {cardDayReminders.length > 0 && (
